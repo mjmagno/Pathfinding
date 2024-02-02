@@ -1,5 +1,18 @@
-#G cost - Distance from starting to node to this node
-#H cost - Distance from end node to this node 
-#F cost - G cost + H cost
-# From starting node calculate F cost of the adjacent nodes and evaluate lowest F cost node
-# Update f costs of surrouding nodes as you evaluate 
+# Node struct to hold these values (?)
+# G cost - Distance from starting node to this node
+# H cost - Distance from end node to this node 
+# F cost - G cost + H cost
+# How are we calculating costs? 
+
+# Need and open list and a closed list
+# Make open list a pq? Lowest f cost node on the open list is the node to search 
+
+# From starting node calculate/update F cost of the adjacent nodes and evaluate lowest F cost node
+# If node being evaluated is end point, return
+
+
+# Need a "parent" value in potential node struct to indicate where they have come from
+# Necessary so we can return the shortest path at the end of the algorithim
+# Note - this arrow will not always point to the most recently evaluated node because of potential worse paths 
+
+# Dealing with diagonals?
