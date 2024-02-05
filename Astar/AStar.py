@@ -13,7 +13,10 @@ from Node import node
 
 # Dealing with diagonals?
 
-# 
+# What is the function taking as input? 
+# File with a graph of 0s and 1s (0 is travelable, 1 is terrain)
+# starting point and end point 
 
 openNodes = PriorityQueue()
+
 

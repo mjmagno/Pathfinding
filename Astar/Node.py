@@ -14,6 +14,9 @@ class node:
     #TODO What to do if f costs are tied 
     def __lt__(self, obj):
         """self < obj."""
+        # If node f costs are tied, compare h costs instead
+        if (self.f == obj.f):
+            return (self.h) < (obj.h)
         return (self.f) < (obj.f)
 
     # def __le__(self, obj):
