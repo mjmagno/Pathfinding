@@ -11,7 +11,12 @@ from Node import node
 # Necessary so we can return the shortest path at the end of the algorithim
 # Note - this arrow will not always point to the most recently evaluated node because of potential worse paths 
 
-# Dealing with diagonals?
+# Distance algorithim?
+#  h = sqrt ( (current_cell.x – goal.x)2 + 
+#             (current_cell.y – goal.y)2 )
+# League of Legends isn't like chess, you can move in any direction. Therefore, use Euclidean distance (?)
+# https://stackoverflow.com/questions/46974075/a-star-algorithm-distance-heuristics
+
 
 # What is the function taking as input? 
 # File with a graph of 0s and 1s (0 is travelable, 1 is terrain)
