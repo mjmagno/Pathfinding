@@ -1,11 +1,12 @@
-# G cost - Distance from starting node to this node
-# H cost - Distance from end node to this node 
+# G cost - Cost of the path from the start node to n
+# H cost - Estimate of cost from this node to end 
 # F cost - G cost + H cost
 # How are we calculating costs? 
 
 # Custom comparators compare f cost, necessary because of the use of priority queues 
 class node:
     def __init__(self, hCost, gCost, parent = None):
+        
         self.h = hCost
         self.g = gCost
         self.f = hCost + gCost
