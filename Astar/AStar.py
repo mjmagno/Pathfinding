@@ -1,29 +1,29 @@
 from queue import PriorityQueue
 from Node import node
 
-# From starting node calculate/update F cost of the adjacent nodes and evaluate lowest F cost node
-# If node being evaluated is end point, return
+# openList = pq
+# no closed list
+# Update graph as we traverse with nodes - simulate closed list
 
-# Need to think about overall structure more
-# Node class is currently lacking x and y coordinates
-# What would an evaluate function take in and return?
-# Astar begins with starting node and evaluates adjacent nodes 
-# Adjacent nodes are evaluated (calculate f cost) and placed onto open nodes list
-# Top of open nodes is popped off and evaluated 
-# Node structure needs x and y coordinates, as well as costs
-# Where should costs be calculated? Helper function in node? Just update values in driver program?
-# What structure should parent value be in Node?
-
-
-
-# Distance algorithim?
-#  h = sqrt ( (current_cell.x – goal.x)2 + 
-#             (current_cell.y – goal.y)2 )
-# League of Legends isn't like chess, you can move in any direction. Therefore, use Euclidean distance (?)
-# https://stackoverflow.com/questions/46974075/a-star-algorithm-distance-heuristics
-
-
+# Diagonal distance heuristic
+# h(n)=c⋅max(∣n.x−goal.x∣,∣n.y−goal.y∣) c=cost of movement
+# Euclidean distance heuristic
+# h(n) ^2  ​​ =(n.x−goal.x) ​2 ​​ +(n.y−goal.y) ​^ 2​​
 
 openNodes = PriorityQueue()
 
+# while openNodes
+# pop top off 
+# iterate through successors
+# if successors is out of bounds - skip
+# if successor is 1 (terrain) - skip
+# if successor is 0 - create new node, call node internals, push onto pq
+# if successor is a node and closed - skip
+# is successor is a node and on open - reevaluate
+# set parent to closed 
+
+# revaluate func
+# compare g cost with new parent vs g cost with old parent
+# if new g cost < old g cost, update parent,g, f cost
+# what if new g = old g? 
 
