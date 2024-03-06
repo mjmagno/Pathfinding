@@ -20,7 +20,7 @@ def aStar(file_name,start,end):
             y = successor[1]
              # path to end node has been found 
             if (successor == end):
-                #TODO band aid fix because successor isn't a node - don't want to create a node for the end
+                #TODO band aid fix because successor isn't a node - don't want to create a node for the end point
                 #For some reason end point is being included on the path, this is a good thing but it shouldn't be due to the band aid fix
                 return parent.returnPath()
             # if sucessor is out of bounds, skip
@@ -43,7 +43,7 @@ def aStar(file_name,start,end):
                 # if route through this parent node is better, update pq 
                 if(g[y][x].reevaluate(parent)):
                     openNodes.remove(g[y][x])   
-                    heapq.heappush(openNodes, g[x][y])
+                    heapq.heappush(openNodes, g[y][x])
 
         parent.listStatus = "closed"
 

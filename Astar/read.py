@@ -1,5 +1,8 @@
 # Takes in a file name and outputs a graph containing file contents
 # File must only contain 1s and 0s
+
+#TODO try, catch block
+#List comprehension?
 def read(fileName):
     text_file = open(fileName,'r')
     g = []

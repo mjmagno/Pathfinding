@@ -55,7 +55,8 @@ class Node:
     def reevaluate(self,alternateParent):
             if (alternateParent.g + 1 < self.g):
                  self.g = alternateParent.g + 1
-                 parent = alternateParent
+                # self.parent vs parent 
+                 self.parent = alternateParent
                  return True
             return False
     
