@@ -118,6 +118,37 @@ tr.dim td { opacity: .55; }
 .event .note { grid-column: 3; }
 .event input { padding: .3rem .5rem; font-size: .9rem; }
 
+/* League client status in the top bar */
+.pill { font-size: .78rem; padding: .15rem .6rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); text-decoration: none; margin-left: auto; white-space: nowrap; }
+.pill.on { border-color: var(--accent); color: var(--accent); }
+.pill.off { opacity: .7; }
+.pill:not([hidden]) + #whoami { margin-left: 0; }
+
+/* pre-game plan */
+.enemies { display: flex; flex-wrap: wrap; gap: .5rem; }
+.enemy { display: grid; justify-items: center; gap: .15rem; padding: .45rem .55rem; min-width: 84px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; color: var(--text); }
+.enemy.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.enemy.empty { opacity: .5; }
+.enemy .spells { display: flex; gap: 2px; min-height: 18px; }
+.spell { width: 18px; height: 18px; border-radius: 4px; vertical-align: middle; }
+.lookup-row label { flex: 1 1 180px; }
+.lookup-row button { align-self: end; }
+.plan-note { white-space: pre-wrap; margin: .25rem 0; }
+
+.cd-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: .75rem; }
+.cd-card { background: var(--panel-2); border-radius: 8px; padding: .75rem; display: grid; gap: .5rem; min-width: 0; }
+.haste { display: flex; align-items: center; gap: .4rem; }
+.haste input { width: 4.5rem; padding: .25rem .4rem; }
+.table-wrap { overflow-x: auto; }
+table.cd td, table.cd th { padding: .35rem .3rem; }
+table.cd .cd-key { white-space: nowrap; width: 1%; }
+table.cd .cd-key .spell { width: 24px; height: 24px; margin-right: .35rem; }
+table.cd .cd-name { cursor: help; }
+table.cd td.num { font-weight: 600; }
+tr.dim-row td { color: var(--muted); }
+.hist-game { border-top: 1px solid var(--line); padding-top: .5rem; display: grid; gap: .25rem; }
+.hist-notes { color: var(--text); padding-left: .25rem; }
+
 .toast {
   position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%);
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: .6rem 1rem; z-index: 10;
@@ -127,6 +158,8 @@ tr.dim td { opacity: .55; }
 @media (max-width: 640px) {
   .topbar { gap: .75rem; padding: .6rem 1rem; }
   #whoami { display: none; }
+  .topbar { flex-wrap: wrap; }
+  .cd-grid { grid-template-columns: 1fr; }
   main { padding: 1rem; }
   .event { grid-template-columns: 48px 1fr; }
   .event .badge-cell { grid-column: 2; }

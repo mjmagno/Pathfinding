@@ -73,6 +73,20 @@ MIGRATIONS = [
         reviewed_at INTEGER
     );
     """,
+    # 2: pre-game plans, written by the League client watcher
+    """
+    CREATE TABLE plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        game_id TEXT UNIQUE,                  -- Riot gameId; the match id is <PLATFORM>_<gameId>
+        session_id INTEGER REFERENCES sessions(id),
+        created_at INTEGER NOT NULL,
+        queue_id INTEGER,
+        champion TEXT, position TEXT,
+        opponent TEXT, opponent_source TEXT,  -- live | history | manual
+        allies_json TEXT, enemies_json TEXT,
+        note TEXT
+    );
+    """,
 ]
 
 # Preset focuses. "metric" names a games column shown next to adherence.
@@ -321,3 +335,127 @@ def set_event_note(conn, event_id: int, note: str | None) -> bool:
     cur = conn.execute("UPDATE events SET note = ? WHERE id = ?", (note, event_id))
     conn.commit()
     return cur.rowcount > 0
+
+
+def game_id_of(match_id: str) -> str:
+    """NA1_5672582141 -> 5672582141 (the gameId the League client uses)."""
+    return match_id.rsplit("_", 1)[-1]
+
+
+def match_for_game_id(conn, game_id: str) -> str | None:
+    rows = conn.execute("SELECT match_id FROM games WHERE match_id LIKE ?", (f"%{game_id}",)).fetchall()
+    return next((r["match_id"] for r in rows if game_id_of(r["match_id"]) == str(game_id)), None)
+
+
+# --- pre-game plans --------------------------------------------------------------
+
+def _plan_dict(row) -> dict | None:
+    if row is None:
+        return None
+    p = dict(row)
+    p["allies"] = json.loads(p.pop("allies_json") or "[]")
+    p["enemies"] = json.loads(p.pop("enemies_json") or "[]")
+    return p
+
+
+def get_plan(conn, plan_id: int) -> dict | None:
+    return _plan_dict(conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone())
+
+
+def plan_for_game_id(conn, game_id: str) -> dict | None:
+    return _plan_dict(conn.execute("SELECT * FROM plans WHERE game_id = ?", (str(game_id),)).fetchone())
+
+
+def save_watched_game(conn, game: dict) -> dict:
+    """Create or update the plan row for a game the watcher is following.
+
+    The note and a hand-picked opponent are never overwritten from here."""
+    plan = None
+    if game.get("plan_id"):
+        plan = get_plan(conn, game["plan_id"])
+    if plan is None and game.get("game_id"):
+        plan = plan_for_game_id(conn, game["game_id"])   # e.g. after a restart mid-game
+    champs = lambda players: json.dumps([{"champion": p["champion"], "position": p["position"]} for p in players])  # noqa: E731
+    if plan is None:
+        active = active_session(conn)
+        cur = conn.execute(
+            "INSERT INTO plans(created_at, session_id) VALUES(?, ?)",
+            (now_ms(), active["id"] if active else None),
+        )
+        plan = {"id": cur.lastrowid, "opponent_source": None}
+    if plan.get("opponent_source") == "manual":
+        opponent, source = plan["opponent"], "manual"
+    else:
+        opponent, source = game.get("opponent"), game.get("opponent_source")
+    conn.execute(
+        """UPDATE plans SET game_id = COALESCE(?, game_id), queue_id = COALESCE(?, queue_id),
+           champion = ?, position = ?, opponent = ?, opponent_source = ?,
+           allies_json = ?, enemies_json = ? WHERE id = ?""",
+        (game.get("game_id"), game.get("queue_id"), game["me"]["champion"], game["me"]["position"],
+         opponent, source, champs(game["allies"]), champs(game["enemies"]), plan["id"]),
+    )
+    conn.commit()
+    return get_plan(conn, plan["id"])
+
+
+def update_plan(conn, plan_id: int, fields: dict) -> dict | None:
+    """Fields from the page: note, and/or opponent (None = back to automatic)."""
+    if "note" in fields:
+        conn.execute("UPDATE plans SET note = ? WHERE id = ?", (fields["note"], plan_id))
+    if "opponent" in fields:
+        if fields["opponent"]:
+            conn.execute("UPDATE plans SET opponent = ?, opponent_source = 'manual' WHERE id = ?",
+                         (fields["opponent"], plan_id))
+        else:
+            conn.execute("UPDATE plans SET opponent = NULL, opponent_source = NULL WHERE id = ?", (plan_id,))
+    conn.commit()
+    return get_plan(conn, plan_id)
+
+
+def guess_opponent(conn, champion: str | None, enemies: list[str]) -> str | None:
+    """Before positions are known: the enemy you've laned against most often."""
+    if not enemies:
+        return None
+    marks = ", ".join("?" for _ in enemies)
+    row = conn.execute(
+        f"""SELECT opponent, COUNT(*) AS n FROM games WHERE opponent IN ({marks}) AND remake = 0
+            GROUP BY opponent ORDER BY n DESC, MAX(game_start) DESC LIMIT 1""",
+        enemies,
+    ).fetchone()
+    return row["opponent"] if row else None
+
+
+def matchup_history(conn, opponent: str, champion: str | None = None, limit: int = 5) -> dict:
+    """Your ranked solo games against `opponent` (any champion, and on `champion`)."""
+    rows = conn.execute(
+        """SELECT * FROM games WHERE opponent = ? AND is_solo = 1 AND remake = 0
+           ORDER BY game_start DESC""", (opponent,),
+    ).fetchall()
+    games = [_game_dict(conn, r) for r in rows]
+
+    def summary(gs):
+        csd = [g["csd10"] for g in gs if g["csd10"] is not None]
+        gd = [g["gd10"] for g in gs if g["gd10"] is not None]
+        return {
+            "games": len(gs), "wins": sum(g["win"] for g in gs),
+            "avg_csd10": round(sum(csd) / len(csd), 1) if csd else None,
+            "avg_gd10": round(sum(gd) / len(gd)) if gd else None,
+        }
+
+    recent = []
+    for g in games[:limit]:
+        plan = plan_for_game_id(conn, game_id_of(g["match_id"]))
+        recent.append({
+            "match_id": g["match_id"], "champion": g["champion"], "win": g["win"], "game_start": g["game_start"],
+            "csd10": g["csd10"], "deaths_pre14": g["deaths_pre14"],
+            "lane_result": (g["review"] or {}).get("lane_result"),
+            "lane_reason": (g["review"] or {}).get("lane_reason"),
+            "note": (g["review"] or {}).get("note"),
+            "plan_note": plan["note"] if plan else None,
+        })
+    return {
+        "opponent": opponent,
+        "all": summary(games),
+        "on_champion": summary([g for g in games if g["champion"] == champion]) if champion else None,
+        "recent": recent,
+    }

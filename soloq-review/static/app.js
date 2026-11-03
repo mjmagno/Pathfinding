@@ -2,8 +2,13 @@
 
 const view = document.getElementById("view");
 const POLL_MS = 90_000;
+const LIVE_POLL_MS = 3_000;
 let status = null;
 let ddragonVersion = null;
+let live = null;            // /api/live: League client state and the current game
+let autoPlanKey = null;     // game the plan screen already opened itself for
+let planState = {};         // what the plan screen currently shows (to update only what changed)
+const matchupCache = {};
 
 // ---------- helpers ----------
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -306,6 +311,9 @@ async function renderGame(matchId) {
       <div class="tiles">${tiles.map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("")}</div>
     </section>
 
+    ${g.plan?.note ? `<section class="card highlight"><h3>Your pre-game plan</h3><p class="plan-note">${esc(g.plan.note)}</p>
+      <p class="muted small">Did it work? Say so in the review below.</p></section>` : ""}
+
     <section class="card"><h2>Kills &amp; deaths</h2>
       ${events || `<p class="muted">No kills or deaths this game.</p>`}
     </section>
@@ -419,16 +427,297 @@ async function renderGames() {
   view.querySelector("#sync").addEventListener("click", async () => { await syncNow(); renderGames(); });
 }
 
+// ---------- League client: live polling ----------
+const STAGE_TEXT = { champ_select: "Champ select", in_game: "In game", ended: "Game over" };
+
+function updateClientPill() {
+  const pill = document.getElementById("client-pill");
+  if (!live?.enabled) { pill.hidden = true; return; }
+  let text = live.client === "connected" ? "Client connected" : "Client offline";
+  let cls = live.client === "connected" ? "" : "off";
+  if (STAGE_TEXT[live.stage]) { text = STAGE_TEXT[live.stage]; cls = "on"; }
+  if (live.stage !== "champ_select" && live.stage !== "in_game" && live.review?.status === "waiting") {
+    text = "Waiting for match data…"; cls = "on";
+  }
+  pill.textContent = text;
+  pill.className = `pill ${cls}`;
+  pill.title = live.message || "";
+  pill.hidden = false;
+}
+
+async function pollLive() {
+  try { live = await api("/api/live"); } catch { live = null; }
+  updateClientPill();
+  if (!live?.enabled) return;
+  const g = live.game;
+  const hash = location.hash || "#/";
+  const onHome = hash === "#/";
+  const onPlan = hash.startsWith("#/plan");
+
+  // Champ select started (or the game is already running): open the plan screen once per game.
+  if (g && !g.ended && (live.stage === "champ_select" || live.stage === "in_game") && autoPlanKey !== g.key) {
+    autoPlanKey = g.key;
+    if (onHome) { location.hash = "#/plan"; return; }
+  }
+  // Game over and imported: open its review once.
+  const r = live.review;
+  if (r?.status === "ready" && !r.opened) {
+    api("/api/live/review-opened", { method: "POST", body: { match_id: r.match_id } }).catch(() => {});
+    if (onHome || onPlan) { location.hash = `#/game/${encodeURIComponent(r.match_id)}`; return; }
+    toast("Your last game is imported and ready to review");
+  }
+  if (onPlan) refreshPlan();
+}
+
+// ---------- pre-game plan ----------
+const POSITION_TEXT = { TOP: "Top", JUNGLE: "Jungle", MIDDLE: "Mid", BOTTOM: "Bot", UTILITY: "Support" };
+const fmtCd = (cd, haste) => {
+  if (cd == null) return "–";
+  const v = Math.round((cd * 100) / (100 + (Number(haste) || 0)) * 10) / 10;
+  return String(v);
+};
+const imgUrl = (version, path) => `https://ddragon.leagueoflegends.com/cdn/${version}/img/${path}`;
+
+function spellIcons(spells, version) {
+  return (spells || []).map((s) => {
+    const label = `${s.name || "?"}${s.cooldown ? ` · ${s.cooldown}s` : ""}`;
+    return s.image && version
+      ? `<img class="spell" src="${imgUrl(version, s.image)}" alt="${esc(s.name)}" title="${esc(label)}">`
+      : `<span class="chip" title="${esc(label)}">${esc(s.name || "?")}</span>`;
+  }).join("");
+}
+
+async function getMatchup(me, vs) {
+  const key = `${me || ""}|${vs || ""}`;
+  if (!matchupCache[key]) {
+    const params = new URLSearchParams();
+    if (me) params.set("me", me);
+    if (vs) params.set("vs", vs);
+    matchupCache[key] = api(`/api/matchup?${params}`).catch((err) => { delete matchupCache[key]; throw err; });
+  }
+  return matchupCache[key];
+}
+
+function cooldownTable(champion, version, haste, side) {
+  if (!champion) return `<div class="cd-card"><p class="muted">No champion yet.</p></div>`;
+  const ranks = Math.max(...champion.spells.map((s) => s.cooldowns.length), 1);
+  const rows = champion.spells.map((s) => `
+    <tr>
+      <td class="cd-key"><img class="spell" src="${imgUrl(version, s.image)}" alt=""><b>${s.key}</b></td>
+      <td class="cd-name" title="${esc(s.description)}">${esc(s.name)}${s.charges ? ` <span class="chip" title="Uses charges: the cooldown shown may be the recharge time">${s.charges} charges</span>` : ""}</td>
+      ${Array.from({ length: ranks }, (_, i) => `<td class="num">${i < s.cooldowns.length ? fmtCd(s.cooldowns[i], haste) : ""}</td>`).join("")}
+    </tr>`).join("");
+  const p = champion.passive;
+  return `<div class="cd-card">
+    <div class="row spread"><div class="row">${champ(champion.id, "")}<div><b>${esc(champion.name)}</b>
+      <div class="small muted">${side === "me" ? "You" : "Lane opponent"}</div></div></div>
+      <label class="haste small">Ability haste <input type="number" min="0" max="300" step="5" data-haste="${side}" value="${Number(haste) || 0}"></label></div>
+    <div class="table-wrap"><table class="cd">
+      <thead><tr><th colspan="2"></th>${Array.from({ length: ranks }, (_, i) => `<th class="num">Rank ${i + 1}</th>`).join("")}</tr></thead>
+      <tbody>${rows}
+        <tr class="dim-row"><td class="cd-key">${p.image ? `<img class="spell" src="${imgUrl(version, p.image)}" alt="">` : ""}<b>P</b></td>
+        <td class="cd-name" title="${esc(p.description)}" colspan="${ranks + 1}">${esc(p.name)} <span class="small muted">(passive · hover for details)</span></td></tr>
+      </tbody></table></div>
+  </div>`;
+}
+
+function historyBlock(h, myChampion) {
+  if (!h) return "";
+  const name = (id) => esc(id || "?");
+  if (!h.all.games) return `<p class="muted small">No ranked solo games against ${name(h.opponent)} yet.</p>`;
+  const line = (s) => `${s.games} game${s.games === 1 ? "" : "s"} · ${s.wins}W ${s.games - s.wins}L · CS diff @10 <span class="${signClass(s.avg_csd10)}">${signed(s.avg_csd10)}</span> · gold diff @10 <span class="${signClass(s.avg_gd10)}">${signed(s.avg_gd10)}</span>`;
+  const recent = h.recent.map((g) => {
+    const notes = [g.plan_note && `<div><span class="muted">Plan:</span> ${esc(g.plan_note)}</div>`,
+      g.note && `<div><span class="muted">Review:</span> ${esc(g.note)}</div>`].filter(Boolean).join("");
+    return `<div class="hist-game">
+      <div class="row">${g.win ? `<span class="badge win">WIN</span>` : `<span class="badge loss">LOSS</span>`}
+        ${champ(g.champion, "sm")}<span class="small">${esc(g.champion)}</span>
+        <span class="small ${signClass(g.csd10)}">CS ${signed(g.csd10)} @10</span>
+        ${g.lane_result ? `<span class="chip">lane ${esc(LABELS[g.lane_result] || g.lane_result)}${g.lane_reason ? ` · ${esc(LABELS[g.lane_reason] || g.lane_reason)}` : ""}</span>` : ""}
+        <a class="small muted" href="#/game/${encodeURIComponent(g.match_id)}">${when(g.game_start)}</a></div>
+      ${notes ? `<div class="small hist-notes">${notes}</div>` : ""}</div>`;
+  }).join("");
+  return `<div class="stack">
+    <div class="small"><b>vs ${name(h.opponent)}:</b> ${line(h.all)}</div>
+    ${h.on_champion && h.on_champion.games ? `<div class="small"><b>On ${name(myChampion)}:</b> ${line(h.on_champion)}</div>` : ""}
+    ${recent}</div>`;
+}
+
+async function renderMatchupInto(el, me, vs, { hasteMe = 0, hasteVs = 0 } = {}) {
+  const pair = `${me || ""}|${vs || ""}`;
+  el.dataset.pair = pair;
+  if (!me && !vs) { el.innerHTML = ""; return; }
+  el.innerHTML = `<p class="muted small">Loading cooldowns…</p>`;
+  try {
+    const m = await getMatchup(me, vs);
+    if (el.dataset.pair !== pair) return; // a newer matchup was requested meanwhile
+    el.innerHTML = `
+      ${vs ? `<div class="stack"><h2>History in this matchup</h2>${historyBlock(m.history, me)}</div>` : ""}
+      <div class="stack"><h2>Cooldowns</h2>
+        <div class="cd-grid">${cooldownTable(m.me, m.version, hasteMe, "me")}${cooldownTable(m.vs, m.version, hasteVs, "vs")}</div>
+        <p class="muted small">Base cooldowns in seconds from Data Dragon (patch ${esc(m.version)}), with the ability haste you enter applied.
+          Passives, charge-based abilities and some reworked spells can differ from what you see in game.</p></div>`;
+    // Ability haste inputs recompute in place.
+    el.querySelectorAll("[data-haste]").forEach((input) => input.addEventListener("input", () => {
+      const champion = input.dataset.haste === "me" ? m.me : m.vs;
+      const table = input.closest(".cd-card").querySelector("tbody");
+      table.querySelectorAll("tr:not(.dim-row)").forEach((tr, i) => {
+        tr.querySelectorAll("td.num").forEach((td, r) => {
+          const cd = champion.spells[i].cooldowns[r];
+          if (cd != null) td.textContent = fmtCd(cd, input.value);
+        });
+      });
+    }));
+  } catch (err) {
+    if (el.dataset.pair === pair) el.innerHTML = `<p class="muted">${esc(err.message)}</p>`;
+  }
+}
+
+async function renderPlan() {
+  planState = {};
+  if (!status) { try { status = await api("/api/status"); } catch { /* focus reminder is optional */ } }
+  view.innerHTML = `<div id="plan-live" class="stack"></div>
+    <section class="card stack" id="lookup">
+      <h2>Look up a matchup</h2>
+      <div class="row lookup-row">
+        <label class="small">You <input type="text" id="lookup-me" list="champion-list" placeholder="e.g. Renekton"></label>
+        <span class="vs">vs</span>
+        <label class="small">Opponent <input type="text" id="lookup-vs" list="champion-list" placeholder="e.g. Darius"></label>
+        <button id="lookup-go">Compare</button>
+      </div>
+      <datalist id="champion-list"></datalist>
+      <div id="lookup-result" class="stack"></div>
+    </section>`;
+  api("/api/champions").then((d) => {
+    view.querySelector("#champion-list").innerHTML = d.champions.map((c) => `<option value="${esc(c.name)}">`).join("");
+  }).catch(() => {});
+  const go = () => renderMatchupInto(view.querySelector("#lookup-result"),
+    view.querySelector("#lookup-me").value.trim(), view.querySelector("#lookup-vs").value.trim());
+  view.querySelector("#lookup-go").addEventListener("click", go);
+  view.querySelectorAll("#lookup input").forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); }));
+  if (!live) { try { live = await api("/api/live"); } catch { live = null; } }
+  refreshPlan();
+}
+
+function planStageLine(g) {
+  if (live.stage === "champ_select") return "Champ select · enemy picks appear as they lock in";
+  if (live.stage === "in_game") {
+    if (!g.live) return "Loading into the game…";
+    return `In game · ${clock((g.game_time || 0) * 1000)}${g.level ? ` · level ${g.level}` : ""}`;
+  }
+  const r = live.review;
+  if (r?.status === "waiting") return `Game over · waiting for Riot's match data (usually 1–3 minutes; ${r.attempts} check${r.attempts === 1 ? "" : "s"} so far)${r.error ? ` · ${r.error}` : ""}`;
+  if (r?.status === "gave_up") return `Game over · the match didn't show up in the Riot API yet${r.error ? ` (${r.error})` : ""}. Use "Check for new games" on the Session page.`;
+  if (r?.status === "ready") return "Game over · imported";
+  return "Game over";
+}
+
+function refreshPlan() {
+  const root = view.querySelector("#plan-live");
+  if (!root || !live) return;
+  const g = live.game;
+
+  if (!live.enabled || !g) {
+    const msg = !live.enabled ? "Following the League client is switched off (WATCH_CLIENT in .env)."
+      : live.client === "connected" ? "No champ select right now. This screen opens by itself when champ select starts, as long as this page is on the Session screen."
+      : `League client not found: ${live.message || "is it running?"} This screen opens by itself once champ select starts.`;
+    const sig = `none|${msg}`;
+    if (planState.sig === sig) return;
+    planState = { sig };
+    root.innerHTML = `<section class="card"><h2>Pre-game</h2><p class="muted">${esc(msg)}</p></section>`;
+    return;
+  }
+
+  const me = g.me;
+  const opp = g.enemies.find((e) => e.champion && e.champion === g.opponent);
+  const sig = JSON.stringify([g.key, live.stage, g.live, g.game_time && Math.floor(g.game_time / 5), g.level, me, g.enemies, g.allies,
+    g.opponent, g.opponent_source, live.review?.status, live.review?.attempts, live.plan?.id]);
+  if (planState.sig === sig) return;
+
+  const version = ddragonVersion;
+  const sourceText = { live: "from in-game positions", history: "best guess from your history, click to change", manual: "picked by you" }[g.opponent_source]
+    || (g.enemies.some((e) => e.champion) ? "click your lane opponent" : "waiting for enemy picks");
+  const enemyButtons = g.enemies.map((e) => e.champion
+    ? `<button type="button" class="enemy ${e.champion === g.opponent ? "on" : ""}" data-opponent="${esc(e.champion)}" title="${esc(e.name || e.champion)}${e.position ? ` (${POSITION_TEXT[e.position] || e.position})` : ""}">
+        ${champ(e.champion, "")}<span class="small">${esc(e.name || e.champion)}</span>
+        ${e.position ? `<span class="small muted">${esc(POSITION_TEXT[e.position] || e.position)}</span>` : ""}
+        <span class="spells">${spellIcons(e.spells, version)}</span></button>`
+    : `<span class="enemy empty">${champ(null, "")}<span class="small muted">picking…</span></span>`).join("");
+
+  const head = `<section class="card highlight stack">
+      <div class="small muted">${esc(planStageLine(g))}</div>
+      <div class="row">${champ(me.champion, "lg")}<span class="vs">vs</span>${champ(g.opponent, "lg")}
+        <div><h1>${esc(me.name || me.champion || "Picking…")}${me.hovering ? ` <span class="small muted">(hovering)</span>` : ""} vs ${esc(opp?.name || g.opponent || "?")}</h1>
+        <div class="row small muted">${me.position ? `${esc(POSITION_TEXT[me.position] || me.position)} · ` : ""}your spells ${spellIcons(me.spells, version) || "–"}
+          ${opp && opp.spells.length ? ` · their spells ${spellIcons(opp.spells, version)}` : ""}</div></div></div>
+      <div class="stack"><div class="small"><b>Enemy team</b> <span class="muted">· ${esc(sourceText)}</span>
+        ${g.opponent_source === "manual" ? `<button class="link small" id="opponent-auto">use automatic</button>` : ""}</div>
+        <div class="enemies">${enemyButtons || `<span class="muted small">No enemy picks yet.</span>`}</div></div>
+    </section>`;
+
+  const focus = status?.active_session?.session?.focus_label;
+  const planId = live.plan?.id;
+  const firstRender = !root.querySelector("#plan-head");
+  if (firstRender) {
+    root.innerHTML = `<div id="plan-head"></div><section class="card stack" id="plan-notes"></section><section class="card stack" id="plan-matchup"></section>`;
+  }
+  root.querySelector("#plan-head").innerHTML = head;
+
+  // Notes: rendered once per plan so typing is never interrupted by a refresh.
+  if (firstRender || planState.planId !== planId) {
+    const notes = root.querySelector("#plan-notes");
+    notes.innerHTML = `
+      ${focus ? `<div class="focus-banner"><div><h3>Session focus</h3><div class="focus">${esc(focus)}</div></div></div>` : ""}
+      <label class="q">Your plan for this game
+        <textarea id="plan-note" placeholder="e.g. Level 1: respect his E range. Trade when W is down (check the cooldowns below). Ward river at 2:45 for the jungler."
+          ${planId ? "" : "disabled"}>${esc(live.plan?.note)}</textarea></label>
+      <div class="small muted" id="plan-saved">${planId ? "Saved automatically; it shows up on this game's review." : "You can write a plan once you've picked (or hovered) a champion."}</div>`;
+    const area = notes.querySelector("#plan-note");
+    let timer = null;
+    const save = async () => {
+      try { await api(`/api/plans/${planId}`, { method: "PUT", body: { note: area.value } }); notes.querySelector("#plan-saved").textContent = "Saved."; }
+      catch (err) { notes.querySelector("#plan-saved").textContent = err.message; }
+    };
+    area.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(save, 700); });
+    area.addEventListener("blur", () => { clearTimeout(timer); if (planId) save(); });
+  }
+
+  // Cooldowns + history: reload only when the matchup changes; ability haste follows the live game.
+  const pair = `${me.champion || ""}|${g.opponent || ""}`;
+  const matchupEl = root.querySelector("#plan-matchup");
+  if (firstRender || planState.pair !== pair) {
+    renderMatchupInto(matchupEl, me.champion, g.opponent, { hasteMe: g.ability_haste || 0 });
+  } else if (g.ability_haste != null && planState.haste !== g.ability_haste) {
+    const input = matchupEl.querySelector('[data-haste="me"]');
+    if (input && document.activeElement !== input) { input.value = g.ability_haste; input.dispatchEvent(new Event("input")); }
+  }
+  matchupEl.hidden = !me.champion && !g.opponent;
+
+  root.querySelectorAll("[data-opponent]").forEach((b) => b.addEventListener("click", () => setPlanOpponent(planId, b.dataset.opponent)));
+  root.querySelector("#opponent-auto")?.addEventListener("click", () => setPlanOpponent(planId, null));
+  planState = { sig, planId, pair, haste: g.ability_haste };
+}
+
+async function setPlanOpponent(planId, champion) {
+  if (!planId) return toast("Pick a champion first", true);
+  try {
+    await api(`/api/plans/${planId}`, { method: "PUT", body: { opponent: champion } });
+    live = await api("/api/live");
+    refreshPlan();
+  } catch (err) { toast(err.message, true); }
+}
+
 // ---------- router ----------
 async function render() {
   const hash = location.hash || "#/";
-  document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active",
-    (a.dataset.nav === "games" && hash.startsWith("#/games")) || (a.dataset.nav === "home" && !hash.startsWith("#/games"))));
+  const section = hash.startsWith("#/games") ? "games" : hash.startsWith("#/plan") ? "plan" : "home";
+  document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   try {
     let m;
     if ((m = hash.match(/^#\/game\/(.+)$/))) await renderGame(decodeURIComponent(m[1]));
     else if ((m = hash.match(/^#\/wrap\/(\d+)$/))) await renderWrap(m[1]);
     else if (hash.startsWith("#/games")) await renderGames();
+    else if (hash.startsWith("#/plan")) await renderPlan();
     else await renderHome();
   } catch (err) {
     view.innerHTML = `<section class="card warn"><h2>Something went wrong</h2><p>${esc(err.message)}</p><a class="btn" href="#/">Home</a></section>`;
@@ -437,5 +726,6 @@ async function render() {
 }
 
 window.addEventListener("hashchange", render);
-loadDdragonVersion().then(render);
+loadDdragonVersion().then(render).then(pollLive);
 setInterval(poll, POLL_MS);
+setInterval(pollLive, LIVE_POLL_MS);

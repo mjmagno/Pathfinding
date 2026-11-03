@@ -23,7 +23,8 @@ TOP_SIDE = {"x": (1200, 5500), "y": (9500, 14000)}
 
 def make_match(match_id: str, end_ms: int, seed: int, queue_id: int = 420,
                my_champion: str | None = None, my_role: str = "TOP",
-               duration_s: int | None = None) -> tuple[dict, dict]:
+               duration_s: int | None = None, lineup: dict | None = None) -> tuple[dict, dict]:
+    """`lineup` = {"ally": {role: champion}, "enemy": {role: champion}} fixes champions."""
     rng = random.Random(seed)
     duration_s = duration_s or rng.randint(22 * 60, 38 * 60)
     start_ms = end_ms - duration_s * 1000
@@ -37,7 +38,10 @@ def make_match(match_id: str, end_ms: int, seed: int, queue_id: int = 420,
         for role in ROLES:
             pid = len(participants) + 1
             is_me = team == my_team and role == my_role
-            if is_me:
+            fixed = (lineup or {}).get("ally" if team == my_team else "enemy", {}).get(role)
+            if fixed:
+                champ = fixed
+            elif is_me:
                 champ = my_champion or rng.choice(MY_POOL)
             else:
                 champ = rng.choice([c for c in POOLS[role] if c not in used])
@@ -192,3 +196,115 @@ class FakeRiotClient:
 
     def get_timeline(self, match_id):
         return self.matches[match_id][1]
+
+    def add_played_game(self, match_id: str, end_ms: int, lineup: dict) -> None:
+        """A game the fake League client just 'played' (see FakeLeague)."""
+        if match_id not in self.matches:
+            self._add(match_id, end_ms, seed=int(match_id.rsplit("_", 1)[-1]) % 1000, lineup=lineup)
+
+
+# --- fake League client ------------------------------------------------------------
+
+DEMO_RIOT_ID = "Demo#TOP"
+DEMO_LINEUP = {
+    "ally": {"TOP": "Renekton", "JUNGLE": "Viego", "MIDDLE": "Ahri", "BOTTOM": "Jinx", "UTILITY": "Thresh"},
+    "enemy": {"TOP": "Darius", "JUNGLE": "LeeSin", "MIDDLE": "Syndra", "BOTTOM": "Kaisa", "UTILITY": "Nautilus"},
+}
+DEMO_SPELLS = {"TOP": (4, 12), "JUNGLE": (4, 11), "MIDDLE": (4, 14), "BOTTOM": (4, 7), "UTILITY": (4, 14)}
+SPELL_IDS = {4: "SummonerFlash", 12: "SummonerTeleport", 11: "SummonerSmite", 14: "SummonerDot", 7: "SummonerHeal"}
+SPELL_NAMES = {4: "Flash", 12: "Teleport", 11: "Smite", 14: "Ignite", 7: "Heal"}
+
+# Seconds into each demo cycle.
+CYCLE = {"champ_select": 10, "my_pick": 16, "enemy_picks": (20, 24, 28, 32, 36), "loading": 45,
+         "in_game": 50, "live": 53, "end": 110, "idle": 118, "length": 150}
+
+
+class FakeLeague:
+    """Plays the League client and the in-game API on a loop: idle, champ select
+    with picks coming in, loading, in game, game over. When a game ends the
+    matching match is handed to the fake Riot API, so the automatic review works."""
+
+    def __init__(self, riot: "FakeRiotClient | None" = None, clock=time.time):
+        self.riot = riot
+        self.clock = clock
+        self.started = clock()
+        self.finished: set[int] = set()
+
+    def _now(self) -> tuple[int, float]:
+        elapsed = self.clock() - self.started
+        return int(elapsed // CYCLE["length"]), elapsed % CYCLE["length"]
+
+    def _game_id(self, cycle: int) -> int:
+        return 7000 + cycle
+
+    def _phase(self, cycle: int, t: float) -> str:
+        if t < CYCLE["champ_select"]:
+            return "Lobby"
+        if t < CYCLE["loading"]:
+            return "ChampSelect"
+        if t < CYCLE["in_game"]:
+            return "GameStart"
+        if t < CYCLE["end"]:
+            return "InProgress"
+        if t < CYCLE["idle"]:
+            self._finish(cycle)
+            return "EndOfGame"
+        return "None"
+
+    def _finish(self, cycle: int) -> None:
+        if cycle in self.finished or self.riot is None:
+            return
+        self.finished.add(cycle)
+        end_ms = int((self.started + cycle * CYCLE["length"] + CYCLE["end"]) * 1000)
+        self.riot.add_played_game(f"DEMO_{self._game_id(cycle)}", end_ms, DEMO_LINEUP)
+
+    def get(self, path: str):
+        cycle, t = self._now()
+        phase = self._phase(cycle, t)
+        if path == "/lol-gameflow/v1/gameflow-phase":
+            return phase
+        if path == "/lol-gameflow/v1/session":
+            if phase in ("ChampSelect", "GameStart", "InProgress", "EndOfGame"):
+                return {"phase": phase, "gameData": {"gameId": self._game_id(cycle), "queue": {"id": 420}}}
+            return None
+        if path == "/lol-champ-select/v1/session":
+            return self._champ_select(t) if phase == "ChampSelect" else None
+        return None
+
+    def _champ_select(self, t: float) -> dict:
+        roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+        mine = []
+        for cell, role in enumerate(roles):
+            locked = t >= CYCLE["my_pick"] or cell != 0
+            champ = DEMO_LINEUP["ally"][role]
+            mine.append({"cellId": cell, "assignedPosition": role.lower(),
+                         "championId": champ if locked else 0,
+                         "championPickIntent": champ if not locked else 0,
+                         "spell1Id": DEMO_SPELLS[role][0], "spell2Id": DEMO_SPELLS[role][1]})
+        # Enemy picks show up one by one; their positions are hidden in champ select.
+        enemy_order = ["MIDDLE", "TOP", "JUNGLE", "UTILITY", "BOTTOM"]
+        theirs = [{"cellId": 5 + i, "assignedPosition": "", "spell1Id": 0, "spell2Id": 0,
+                   "championId": DEMO_LINEUP["enemy"][role] if t >= CYCLE["enemy_picks"][i] else 0}
+                  for i, role in enumerate(enemy_order)]
+        return {"localPlayerCellId": 0, "myTeam": mine, "theirTeam": theirs}
+
+    def all_game_data(self) -> dict | None:
+        cycle, t = self._now()
+        if not (CYCLE["live"] <= t < CYCLE["end"]):
+            return None
+        players = []
+        for side, team in (("ally", "ORDER"), ("enemy", "CHAOS")):
+            for role, champ in DEMO_LINEUP[side].items():
+                riot_id = DEMO_RIOT_ID if side == "ally" and role == "TOP" else f"{side.title()}{role.title()}#DEMO"
+                spells = DEMO_SPELLS[role]
+                players.append({
+                    "riotId": riot_id, "championName": champ, "rawChampionName": f"game_character_displayname_{champ}",
+                    "team": team, "position": role,
+                    "summonerSpells": {slot: {"displayName": SPELL_NAMES[s],
+                                              "rawDisplayName": f"GeneratedTip_SummonerSpell_{SPELL_IDS[s]}_DisplayName"}
+                                       for slot, s in zip(("summonerSpellOne", "summonerSpellTwo"), spells)},
+                })
+        game_time = t - CYCLE["in_game"]
+        return {"activePlayer": {"riotId": DEMO_RIOT_ID, "level": 1 + int(game_time // 10),
+                                 "championStats": {"abilityHaste": 0 if game_time < 30 else 15}},
+                "allPlayers": players, "gameData": {"gameTime": game_time}}

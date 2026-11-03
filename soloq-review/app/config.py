@@ -22,6 +22,8 @@ class Settings:
     port: int
     session_idle_hours: float
     db_path: Path
+    league_path: str = ""        # League install folder; found automatically when empty
+    watch_client: bool = True    # follow champ select / games through the League client
 
     @property
     def game_name(self) -> str:
@@ -82,4 +84,6 @@ def load_settings() -> Settings:
         port=int(get("PORT", "8000")),
         session_idle_hours=float(get("SESSION_IDLE_HOURS", "3")),
         db_path=Path(get("SOLOQ_DB", str(ROOT / "soloq.db"))),
+        league_path=get("LEAGUE_PATH"),
+        watch_client=get("WATCH_CLIENT", "1").strip().lower() not in ("0", "false", "no", "off"),
     )

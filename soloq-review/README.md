@@ -9,6 +9,21 @@ second monitor:
    timestamp to find in the replay, a few quick questions, and how much attention you gave your focus.
 4. **Wrap up** the session: record, average focus attention, what you learned, and whether to keep the focus next time.
 
+With the League client open, the page also follows your games by itself:
+
+- **Champ select → pre-game screen.** When champ select starts, the page switches to the
+  **Pre-game** tab (if it is on the Session screen): your champion vs your lane opponent, the
+  enemy team, your session focus, a plan note, your past games in that matchup (with the notes you
+  wrote), and both champions' **ability cooldowns at every rank**. Ability haste can be typed in
+  for either side; yours fills in by itself once the game is running.
+- **Lane opponent.** Champ select doesn't say who the enemy laner is, so it starts as a guess
+  (the enemy you've laned against most) and is confirmed from in-game positions once the game
+  loads. Click an enemy to pick one yourself.
+- **Game over → review.** When the game ends the page keeps checking for the match (it reaches
+  the Riot API 1–3 minutes later) and opens its review, with your plan note at the top.
+
+The Pre-game tab also has a **matchup lookup** for comparing any two champions without a game running.
+
 All games are stored, but only **Ranked Solo/Duo** games (not remakes) count toward stats.
 Other queues show up greyed out. Everything is saved locally in `soloq.db` (SQLite).
 
@@ -72,7 +87,26 @@ that show up as "needs review".
 ```
 
 Demo mode uses made-up matches and a separate `demo.db`. A new fake game "finishes"
-each time it checks (up to 3), so you can try the whole session flow.
+each time it checks (up to 3), so you can try the whole session flow. It also includes a fake
+League client that loops through champ select, a game and the end of the game every 2½ minutes,
+so you can see the pre-game screen and the automatic review.
+
+### Optional settings for the League client
+
+Add these to `.env` only if you need them:
+
+```
+LEAGUE_PATH=D:\Riot Games\League of Legends
+WATCH_CLIENT=0
+```
+
+- `LEAGUE_PATH`: where League is installed. Usually found automatically (from the Riot Client's
+  install records, or `C:\Riot Games\League of Legends`).
+- `WATCH_CLIENT=0`: turns off following the League client.
+
+The tool only **reads** from the client (the client's local API for the game phase and champ
+select, and Riot's in-game Live Client Data API for positions, summoner spells and ability haste).
+It never clicks, picks, or changes anything. Both are local to your PC.
 
 ## Notes on the stats
 
@@ -85,6 +119,10 @@ each time it checks (up to 3), so you can try the whole session flow.
 - A session ends on its own after 3 hours without a game (`SESSION_IDLE_HOURS` in `.env`);
   you can still wrap it up afterwards.
 - Match data usually reaches the Riot API 1–3 minutes after a game ends.
+- **Cooldowns** are the base values from Data Dragon (Riot's static data, cached per patch in
+  `cache/`), with the ability haste you enter applied: `cooldown × 100 / (100 + haste)`.
+  Passives aren't listed with cooldowns, and abilities that use charges show their charge count;
+  a few abilities behave differently in game than their listed cooldown suggests.
 
 ## Development
 
@@ -102,13 +140,16 @@ Layout:
 | `app/db.py` | SQLite schema (numbered migrations), sessions, games, reviews |
 | `app/sync.py` | Imports new matches |
 | `app/main.py` | FastAPI JSON API and the page |
-| `app/demo.py` | Fake match data for demo mode and tests |
+| `app/demo.py` | Fake match data and a fake League client for demo mode and tests |
+| `app/league.py` | Read-only access to the League client and the in-game Live Client Data API |
+| `app/watcher.py` | Follows champ select and games; starts the import when a game ends |
+| `app/ddragon.py` | Data Dragon: ability cooldowns, summoner spells, champion ids (cached per patch) |
 | `static/` | The web page (plain HTML/CSS/JS, no build step) |
 
 ## Roadmap
 
 - [x] Sessions with a focus, post-game review, kill/death timestamps, session wrap-up
 - [ ] Dashboard: win rate and lane stats by champion and matchup, jungler interactions, focus attention over time
-- [ ] League client watcher: pre-game plan screen when champ select ends, automatic review when the game ends
-- [ ] Cooldown comparison for your matchup on the pre-game screen
+- [x] League client watcher: pre-game plan screen during champ select, automatic review when the game ends
+- [x] Cooldown comparison for your matchup on the pre-game screen
 - [ ] Open the replay and skip to a kill/death with one click
