@@ -17,8 +17,21 @@ class RiotApiError(Exception):
         self.status = status
 
 
+# The Riot API sits behind Cloudflare, which rejects Python's default
+# "Python-urllib/x.y" User-Agent with a 403 ("error code: 1010") before the
+# request reaches Riot. Any descriptive User-Agent is accepted.
+USER_AGENT = "SoloQReview/1.0 (personal match review app)"
+
 # Account-V1 has no "sea" cluster; accounts are global, so any cluster works.
 ACCOUNT_REGION = {"americas": "americas", "europe": "europe", "asia": "asia", "sea": "asia"}
+
+
+def _is_riot_error_body(body: str) -> bool:
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and isinstance(data.get("status"), dict)
 
 
 class RiotClient:
@@ -31,7 +44,9 @@ class RiotClient:
         url = f"https://{host_region}.api.riotgames.com{path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
-        request = urllib.request.Request(url, headers={"X-Riot-Token": self.api_key})
+        request = urllib.request.Request(
+            url, headers={"X-Riot-Token": self.api_key, "User-Agent": USER_AGENT}
+        )
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -43,6 +58,18 @@ class RiotClient:
                     time.sleep(min(wait, 120))
                     continue
                 if err.code in (401, 403):
+                    body = err.read().decode("utf-8", "replace")
+                    if not _is_riot_error_body(body):
+                        # Riot's own auth errors are JSON {"status": {...}}. Anything
+                        # else (e.g. Cloudflare "error code: 1010" or an HTML block
+                        # page) was rejected before reaching Riot: not a key problem.
+                        snippet = " ".join(body.split())[:120] or "empty response"
+                        raise RiotApiError(
+                            f"Riot API request to {path} was blocked before reaching Riot "
+                            f"(HTTP {err.code}: {snippet}). This is not an API key problem; "
+                            "try again in a minute.",
+                            err.code,
+                        ) from err
                     raise RiotApiError(
                         "Riot API rejected the key (expired or invalid). Development keys "
                         "expire every 24 hours: regenerate it at developer.riotgames.com "
